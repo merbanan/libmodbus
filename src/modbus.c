@@ -508,6 +508,19 @@ int modbus_receive_confirmation(modbus_t *ctx, uint8_t *rsp)
     return _modbus_receive_msg(ctx, rsp, MSG_CONFIRMATION);
 }
 
+static int fix_bad_response(uint8_t *rsp, int rsp_length, uint8_t *req) {
+
+    if (rsp[1] == MODBUS_FC_READ_HOLDING_REGISTERS)
+        if ((rsp[2]&1) == 1) {
+            memmove(&rsp[4], &rsp[3], rsp[2]);
+            rsp[3] = 0;
+            rsp[2]++;
+            //req[5]++;
+        }
+        
+    return rsp_length +1;
+}
+
 static int check_confirmation(modbus_t *ctx, uint8_t *req,
                               uint8_t *rsp, int rsp_length)
 {
@@ -528,6 +541,10 @@ static int check_confirmation(modbus_t *ctx, uint8_t *req,
     }
 
     rsp_length_computed = compute_response_length_from_request(ctx, req);
+
+    if (rsp_length != rsp_length_computed) {
+        rsp_length = fix_bad_response(rsp, rsp_length, req);
+    }
 
     /* Exception code */
     if (function >= 0x80) {
@@ -1045,13 +1062,13 @@ static int read_io_status(modbus_t *ctx, int function,
     int req_length;
 
     uint8_t req[_MIN_REQ_LENGTH];
-    uint8_t rsp[MAX_MESSAGE_LENGTH];
+    uint8_t rsp[MAX_MESSAGE_LENGTH] ={0};
 
     req_length = ctx->backend->build_request_basis(ctx, function, addr, nb, req);
 
     rc = send_msg(ctx, req, req_length);
     if (rc > 0) {
-        int i, temp, bit;
+        int i,j, temp, bit;
         int pos = 0;
         int offset;
         int offset_end;
@@ -1066,9 +1083,17 @@ static int read_io_status(modbus_t *ctx, int function,
 
         offset = ctx->backend->header_length + 2;
         offset_end = offset + rc;
+        
+        
         for (i = offset; i < offset_end; i++) {
             /* Shift reg hi_byte to temp */
             temp = rsp[i];
+
+            // fixup response to bogus request from waveshare
+            for (j=0 ; j<8 ; j++) {
+                if ((temp | (1<<j)))
+                    if (nb < j+1) nb=j+1;
+            }
 
             for (bit = 0x01; (bit & 0xff) && (pos < nb);) {
                 dest[pos++] = (temp & bit) ? TRUE : FALSE;
